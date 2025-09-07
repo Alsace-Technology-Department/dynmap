@@ -53,14 +53,14 @@ public class MySQLMapStorage extends MapStorage {
     private static final long IDLE_TIMEOUT = 60000;	// Use 60 second timeout
     private int cpoolCount = 0;
     private static final Charset UTF8 = Charset.forName("UTF-8");
-        
+
     public class StorageTile extends MapStorageTile {
         private Integer mapkey;
         private String uri;
         protected StorageTile(DynmapWorld world, MapType map, int x, int y,
                 int zoom, ImageVariant var) {
             super(world, map, x, y, zoom, var);
-            
+
             mapkey = getMapKey(world, map, var);
 
             if (zoom > 0) {
@@ -166,7 +166,7 @@ public class MySQLMapStorage extends MapStorage {
             boolean exists = exists();
             // If delete, and doesn't exist, quit
             if ((encImage == null) && (!exists)) return false;
-            
+
             try {
                 c = getConnection();
                 PreparedStatement stmt;
@@ -281,7 +281,7 @@ public class MySQLMapStorage extends MapStorage {
             return uri.hashCode();
         }
     }
-    
+
     public MySQLMapStorage() {
     }
 
@@ -296,7 +296,7 @@ public class MySQLMapStorage extends MapStorage {
         }
         return true;
     }
-    
+
     @Override
     public boolean init(DynmapCore core) {
         if (!super.init(core)) {
@@ -316,9 +316,9 @@ public class MySQLMapStorage extends MapStorage {
         tableMarkerFiles = prefix + "MarkerFiles";
         tableStandaloneFiles = prefix + "StandaloneFiles";
         tableSchemaVersion = prefix + "SchemaVersion";
-        
+
         if (!checkDriver()) return false;
-        
+
         // Initialize/update tables, if needed
         if(!initializeTables()) {
             return false;
@@ -371,7 +371,7 @@ public class MySQLMapStorage extends MapStorage {
             fw.write("?>\n");
         } catch (IOException iox) {
             Log.severe("Error writing MySQL_config.php", iox);
-            return false; 
+            return false;
         } finally {
             if (fw != null) {
                 try { fw.close(); } catch (IOException x) {}
@@ -403,19 +403,19 @@ public class MySQLMapStorage extends MapStorage {
         }
         return ver;
     }
-    
+
     private void doUpdate(Connection c, String sql) throws SQLException {
         Statement stmt = c.createStatement();
         stmt.executeUpdate(sql);
         stmt.close();
     }
-    
+
     private HashMap<String, Integer> mapKey = new HashMap<String, Integer>();
-    
+
     private void doLoadMaps() {
         Connection c = null;
         boolean err = false;
-        
+
         mapKey.clear();
         // Read the maps table - cache results
         try {
@@ -444,7 +444,7 @@ public class MySQLMapStorage extends MapStorage {
             c = null;
         }
     }
-    
+
     private Integer getMapKey(DynmapWorld w, MapType mt, ImageVariant var) {
         String id = w.getName() + ":" + mt.getPrefix() + ":" + var.toString();
         synchronized(mapKey) {
@@ -488,7 +488,19 @@ public class MySQLMapStorage extends MapStorage {
             return k;
         }
     }
-    
+
+    private static final String CREATE_TABLE_TEMPLATE =
+            "CREATE TABLE `%s` (\n" +
+                    "  `row_id` BIGINT NOT NULL PRIMARY KEY  AUTO_INCREMENT COMMENT 'technical primary key'\n" +
+                    "  `coordinates` BIGINT NOT NULL COMMENT 'x-y composite coordinates'\n" +
+                    "  `zoom` int NOT NULL COMMENT 'zoom level',\n" +
+                    "  `hashcode` bigint NOT NULL COMMENT 'image hashcode',\n" +
+                    "  `last_update` bigint NOT NULL COMMENT 'last update timestamp',\n" +
+                    "  `format` int NOT NULL COMMENT 'image format 0:png 1-7:jpg 8-15:webp',\n" +
+                    "  `image` mediumblob COMMENT 'image',\n" +
+                    "  UNIQUE(`coordinates`, `zoom`),\n" +
+                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci KEY_BLOCK_SIZE=4;";
+
     private boolean initializeTables() {
         Connection c = null;
         boolean err = false;
@@ -499,12 +511,12 @@ public class MySQLMapStorage extends MapStorage {
             	Log.info("Initializing database schema");
                 c = getConnection();
                 doUpdate(c, "CREATE TABLE " + tableMaps + " (ID INTEGER PRIMARY KEY AUTO_INCREMENT, WorldID VARCHAR(64) NOT NULL, MapID VARCHAR(64) NOT NULL, Variant VARCHAR(16) NOT NULL, ServerID BIGINT NOT NULL DEFAULT 0)");
-                doUpdate(c, "CREATE TABLE " + tableTiles + " (MapID INT NOT NULL, x INT NOT NULL, y INT NOT NULL, zoom INT NOT NULL, HashCode BIGINT NOT NULL, LastUpdate BIGINT NOT NULL, Format INT NOT NULL, Image MEDIUMBLOB, NewImage MEDIUMBLOB, PRIMARY KEY(MapID, x, y, zoom))");
+                //doUpdate(c, "CREATE TABLE " + tableTiles + " (MapID INT NOT NULL, x INT NOT NULL, y INT NOT NULL, zoom INT NOT NULL, HashCode BIGINT NOT NULL, LastUpdate BIGINT NOT NULL, Format INT NOT NULL, Image MEDIUMBLOB, NewImage MEDIUMBLOB, PRIMARY KEY(MapID, x, y, zoom))");
                 doUpdate(c, "CREATE TABLE " + tableFaces + " (PlayerName VARCHAR(64) NOT NULL, TypeID INT NOT NULL, Image MEDIUMBLOB, PRIMARY KEY(PlayerName, TypeID))");
                 doUpdate(c, "CREATE TABLE " + tableMarkerIcons + " (IconName VARCHAR(128) PRIMARY KEY NOT NULL, Image MEDIUMBLOB)");
                 doUpdate(c, "CREATE TABLE " + tableMarkerFiles + " (FileName VARCHAR(128) PRIMARY KEY NOT NULL, Content MEDIUMTEXT)");
                 doUpdate(c, "CREATE TABLE " + tableStandaloneFiles + " (FileName VARCHAR(128) NOT NULL, ServerID BIGINT NOT NULL DEFAULT 0, Content MEDIUMTEXT, PRIMARY KEY (FileName, ServerID))");
-                doUpdate(c, "CREATE INDEX " + tableMaps + "_idx ON " + tableMaps + "(WorldID, MapID, Variant, ServerID)");  
+                doUpdate(c, "CREATE INDEX " + tableMaps + "_idx ON " + tableMaps + "(WorldID, MapID, Variant, ServerID)");
                 doUpdate(c, "CREATE TABLE " + tableSchemaVersion + " (level INT PRIMARY KEY NOT NULL)");
                 doUpdate(c, "INSERT INTO " + tableSchemaVersion + " (level) VALUES (6)");
                 version = 6;	// Initial - we have all the following updates already
@@ -601,7 +613,7 @@ public class MySQLMapStorage extends MapStorage {
                     	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB, ALGORITHM=INPLACE, LOCK=NONE");
                 	} catch (SQLException x) {
                     	Log.info("Updating tiles table using legacy method - this might take a while and may need a lot of database space...");
-                    	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB");                		
+                    	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB");
                     	Log.info("Legacy tile update completed");
                 	}
                 }
@@ -623,7 +635,7 @@ public class MySQLMapStorage extends MapStorage {
             try {
             	Log.info("Updating database schema from version = " + version);
                 c = getConnection();
-                doUpdate(c, "CREATE INDEX " + tableMaps + "_idx ON " + tableMaps + "(WorldID, MapID, Variant, ServerID)");  
+                doUpdate(c, "CREATE INDEX " + tableMaps + "_idx ON " + tableMaps + "(WorldID, MapID, Variant, ServerID)");
                 doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=6 WHERE level = 5;");
                 version = 6;
             } catch (SQLException x) {
@@ -641,10 +653,10 @@ public class MySQLMapStorage extends MapStorage {
     	Log.info("Schema version = " + version);
         // Load maps table - cache results
         doLoadMaps();
-        
+
         return true;
     }
-        
+
     private Connection getConnection() throws SQLException, StorageShutdownException {
         Connection c = null;
         if (isShutdown) { throw new StorageShutdownException(); }
@@ -685,11 +697,11 @@ public class MySQLMapStorage extends MapStorage {
         }
         return c;
     }
-    
+
     private static Connection configureConnection(Connection conn) throws SQLException {
         return conn;
     }
-    
+
     private void releaseConnection(Connection c, boolean err) {
         if (c == null) return;
         synchronized (cpool) {
@@ -884,7 +896,7 @@ public class MySQLMapStorage extends MapStorage {
         boolean exists = hasPlayerFaceImage(playername, facetype);
         // If delete, and doesn't exist, quit
         if ((encImage == null) && (!exists)) return false;
-        
+
         try {
             c = getConnection();
             PreparedStatement stmt;
@@ -980,7 +992,7 @@ public class MySQLMapStorage extends MapStorage {
         boolean err = false;
         PreparedStatement stmt = null;
         ResultSet rs = null;
-        
+
         try {
             c = getConnection();
             boolean exists = false;
@@ -1146,7 +1158,7 @@ public class MySQLMapStorage extends MapStorage {
     public String getConfigurationJSONURI(boolean login_enabled) {
         return "standalone/MySQL_configuration.php"; // ?serverid={serverid}";
     }
-    
+
     @Override
     // External web server only
     public String getUpdateJSONURI(boolean login_enabled) {

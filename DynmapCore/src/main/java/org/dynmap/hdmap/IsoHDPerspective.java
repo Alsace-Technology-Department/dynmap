@@ -947,7 +947,7 @@ public class IsoHDPerspective implements HDPerspective {
         }
 /**
          * Light level cache
-         * @param index of light level (0-3)
+         * @param idx of light level (0-3)
          */
         @Override
         public final LightLevels getCachedLightLevels(int idx) {
@@ -1383,6 +1383,17 @@ public class IsoHDPerspective implements HDPerspective {
         return renderone;
     }
 
+    /**
+     * write to storage asynchronously
+     * @param tile
+     * @param mtile
+     * @param crc
+     * @param rendered
+     * @param im
+     * @param startTimestamp
+     * @param prefix
+     * @return
+     */
     private boolean doWrite(
             HDMapTile tile,
             MapStorageTile mtile,
