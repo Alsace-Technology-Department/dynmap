@@ -38,7 +38,6 @@ public class MySQLMapStorage extends MapStorage {
     protected String hostname;
     private String prefix = "";
     protected String flags;
-    private String tableTiles;
     private String tableMaps;
     private String tableFaces;
     private String tableMarkerIcons;
@@ -54,14 +53,39 @@ public class MySQLMapStorage extends MapStorage {
     private int cpoolCount = 0;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
+    /**
+     * get tiles table name
+     * @param mapId id of map
+     * @return table name
+     */
+    private String nameOfTilesTable(Integer mapId) {
+        if (null == mapId) {
+            return prefix + "Tiles";
+        } else {
+            return prefix + "Tiles" + mapId;
+        }
+    }
+
     public class StorageTile extends MapStorageTile {
-        private Integer mapkey;
-        private String uri;
+        private final Integer mapId;
+        private final String uri;
+
+        /**
+         * the name of Tile table, format:prefix + 'Tiles' + map_id </br>
+         * eg:Tiles10
+         */
+        private final String tableTiles;
+        /**
+         * x-y composite coordinates
+          */
+        private final long coordinates;
         protected StorageTile(DynmapWorld world, MapType map, int x, int y,
                 int zoom, ImageVariant var) {
             super(world, map, x, y, zoom, var);
 
-            mapkey = getMapKey(world, map, var);
+            mapId = getMapKey(world, map, var);
+            coordinates = (((long) x) << 32) & (long) y;
+
 
             if (zoom > 0) {
                 uri = map.getPrefix() + var.variantSuffix + "/"+ (x >> 5) + "_" + (y >> 5) + "/" + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".substring(0, zoom) + "_" + x + "_" + y + "." + map.getImageFormat().getFileExt();
@@ -69,18 +93,51 @@ public class MySQLMapStorage extends MapStorage {
             else {
                 uri = map.getPrefix() + var.variantSuffix + "/"+ (x >> 5) + "_" + (y >> 5) + "/" + x + "_" + y + "." + map.getImageFormat().getFileExt();
             }
+
+            tableTiles = nameOfTilesTable(mapId);
+            if (null != mapId) {
+                createTilesTable();
+            }
         }
 
-        @Override
-        public boolean exists() {
-            if (mapkey == null) return false;
-            boolean rslt = false;
+        /**
+         * create tiles table if not exists
+         */
+        private void createTilesTable() {
+            final String DDL_SQL = String.format(CREATE_TILES_TABLE_TEMPLATE, tableTiles);
             Connection c = null;
             boolean err = false;
             try {
                 c = getConnection();
                 Statement stmt = c.createStatement();
-                ResultSet rs = stmt.executeQuery("SELECT HashCode FROM " + tableTiles + " WHERE MapID=" + mapkey + " AND x=" + x + " AND y=" + y + " AND zoom=" + zoom + ";");
+                ResultSet rs = stmt.executeQuery(DDL_SQL);
+                rs.close();
+                stmt.close();
+            } catch (SQLException x) {
+                logSQLException(String.format("create %s error", tableTiles), x);
+                err = true;
+            } catch (StorageShutdownException x) {
+                err = true;
+            } finally {
+                releaseConnection(c, err);
+            }
+        }
+
+        @Override
+        public boolean exists() {
+            final String SQL = String.format(
+                    "SELECT hashcode FROM %s WHERE coordinates = ? AND zoom = ?;", tableTiles
+            );
+            if (mapId == null) return false;
+            boolean rslt = false;
+            Connection c = null;
+            boolean err = false;
+            try {
+                c = getConnection();
+                PreparedStatement stmt = c.prepareStatement(SQL);
+                stmt.setLong(1, coordinates);
+                stmt.setInt(2, zoom);
+                ResultSet rs = stmt.executeQuery();
                 rslt = rs.next();
                 rs.close();
                 stmt.close();
@@ -97,16 +154,21 @@ public class MySQLMapStorage extends MapStorage {
 
         @Override
         public boolean matchesHashCode(long hash) {
-            if (mapkey == null) return false;
+            final String SQL = String.format(
+                    "SELECT hashcode FROM %s WHERE coordinates = ? AND zoom = ?;", tableTiles
+            );
+            if (mapId == null) return false;
             boolean rslt = false;
             Connection c = null;
             boolean err = false;
             try {
                 c = getConnection();
-                Statement stmt = c.createStatement();
-                ResultSet rs = stmt.executeQuery("SELECT HashCode FROM " + tableTiles + " WHERE MapID=" + mapkey + " AND x=" + x + " AND y=" + y + " AND zoom=" + zoom + ";");
+                PreparedStatement stmt = c.prepareStatement(SQL);
+                stmt.setLong(1, coordinates);
+                stmt.setInt(2, zoom);
+                ResultSet rs = stmt.executeQuery();
                 if (rs.next()) {
-                    long v = rs.getLong("HashCode");
+                    long v = rs.getLong("hashcode");
                     rslt = (v == hash);
                 }
                 rs.close();
@@ -124,21 +186,25 @@ public class MySQLMapStorage extends MapStorage {
 
         @Override
         public TileRead read() {
-            if (mapkey == null) return null;
+            final String SQL = String.format(
+                    "SELECT hashcode,last_update,format,image FROM %s WHERE coordinates = ? AND zoom = ?;", tableTiles
+            );
+            if (mapId == null) return null;
             TileRead rslt = null;
             Connection c = null;
             boolean err = false;
             try {
                 c = getConnection();
-                Statement stmt = c.createStatement();
-                ResultSet rs = stmt.executeQuery("SELECT HashCode,LastUpdate,Format,Image,NewImage FROM " + tableTiles + " WHERE MapID=" + mapkey + " AND x=" + x + " AND y=" + y + " AND zoom=" + zoom + ";");
+                PreparedStatement stmt = c.prepareStatement(SQL);
+                stmt.setLong(1, coordinates);
+                stmt.setInt(2, zoom);
+                ResultSet rs = stmt.executeQuery();
                 if (rs.next()) {
                     rslt = new TileRead();
-                    rslt.hashCode = rs.getLong("HashCode");
-                    rslt.lastModified = rs.getLong("LastUpdate");
-                    rslt.format = MapType.ImageEncoding.fromOrd(rs.getInt("Format"));
-                    byte[] img = rs.getBytes("NewImage");
-                    if (img == null) img = rs.getBytes("Image");
+                    rslt.hashCode = rs.getLong("hashcode");
+                    rslt.lastModified = rs.getLong("last_update");
+                    rslt.format = MapType.ImageEncoding.fromOrd(rs.getInt("format"));
+                    byte[] img = rs.getBytes("image");
                     if (img == null) {
                     	rslt = null;
                     } else {
@@ -160,45 +226,37 @@ public class MySQLMapStorage extends MapStorage {
 
         @Override
         public boolean write(long hash, BufferOutputStream encImage, long timestamp) {
-            if (mapkey == null) return false;
+            final String WRITE_SQL = String.format("INSERT INTO %s (coordinates, zoom, hashcode, last_update, format, image) " +
+                    "VALUES(?,?,?,?,?,?) " +
+                    "ON DUPLICATE KEY UPDATE " +
+                    "coordinates = ?, " +
+                    "zoom = ?, " +
+                    "hashcode = ?, " +
+                    "last_update = ?, " +
+                    "format = ?, " +
+                    "image = ?", tableTiles);
+            final String DELETE_SQL = String.format("DELETE FROM %s WHERE coordinates = ? AND zoom = ?", tableTiles);
+            if (mapId == null) return false;
             Connection c = null;
             boolean err = false;
-            boolean exists = exists();
-            // If delete, and doesn't exist, quit
-            if ((encImage == null) && (!exists)) return false;
 
             try {
                 c = getConnection();
                 PreparedStatement stmt;
-                if (encImage == null) { // If delete
-                    stmt = c.prepareStatement("DELETE FROM " + tableTiles + " WHERE MapID=? AND x=? and y=? AND zoom=?;");
-                    stmt.setInt(1, mapkey);
-                    stmt.setInt(2, x);
-                    stmt.setInt(3, y);
-                    stmt.setInt(4, zoom);
+                // delete if new image is empty
+                if (encImage == null) {
+                    stmt = c.prepareStatement(DELETE_SQL);
+                    stmt.setLong(1, coordinates);
+                    stmt.setInt(2, zoom);
+                } else {
+                    stmt = c.prepareStatement(WRITE_SQL);
+                    stmt.setLong(1, coordinates);
+                    stmt.setInt(2, zoom);
+                    stmt.setLong(3, hash);
+                    stmt.setLong(4, timestamp);
+                    stmt.setInt(5, map.getImageFormat().getEncoding().ordinal());
+                    stmt.setBinaryStream(6, new BufferInputStream(encImage.buf, encImage.len), encImage.len);
                 }
-                else if (exists) {
-                    stmt = c.prepareStatement("UPDATE " + tableTiles + " SET HashCode=?, LastUpdate=?, Format=?, NewImage=?, Image=NULL WHERE MapID=? AND x=? and y=? AND zoom=?;");
-                    stmt.setLong(1, hash);
-                    stmt.setLong(2, timestamp);
-                    stmt.setInt(3, map.getImageFormat().getEncoding().ordinal());
-                    stmt.setBinaryStream(4, new BufferInputStream(encImage.buf, encImage.len), encImage.len);
-                    stmt.setInt(5, mapkey);
-                    stmt.setInt(6, x);
-                    stmt.setInt(7, y);
-                    stmt.setInt(8, zoom);
-                }
-                else {
-                    stmt = c.prepareStatement("INSERT INTO " + tableTiles + " (MapID,x,y,zoom,HashCode,LastUpdate,Format,NewImage,Image) VALUES (?,?,?,?,?,?,?,?,NULL);");
-                    stmt.setInt(1, mapkey);
-                    stmt.setInt(2, x);
-                    stmt.setInt(3, y);
-                    stmt.setInt(4, zoom);
-                    stmt.setLong(5, hash);
-                    stmt.setLong(6, timestamp);
-                    stmt.setInt(7, map.getImageFormat().getEncoding().ordinal());
-                    stmt.setBinaryStream(8, new BufferInputStream(encImage.buf, encImage.len), encImage.len);
-               }
                 stmt.executeUpdate();
                 stmt.close();
                 // Signal update for zoom out
@@ -309,7 +367,7 @@ public class MySQLMapStorage extends MapStorage {
         password = core.configuration.getString("storage/password", "dynmap");
         prefix = core.configuration.getString("storage/prefix", "");
         flags = core.configuration.getString("storage/flags", "?allowReconnect=true&autoReconnect=true");
-        tableTiles = prefix + "Tiles";
+        //tableTiles = prefix + "Tiles";
         tableMaps = prefix + "Maps";
         tableFaces = prefix + "Faces";
         tableMarkerIcons = prefix + "MarkerIcons";
@@ -489,9 +547,14 @@ public class MySQLMapStorage extends MapStorage {
         }
     }
 
-    private static final String CREATE_TABLE_TEMPLATE =
-            "CREATE TABLE `%s` (\n" +
-                    "  `row_id` BIGINT NOT NULL PRIMARY KEY  AUTO_INCREMENT COMMENT 'technical primary key'\n" +
+    /**
+     * Tiles table ddl
+     * table name format: prefix+'Tiles'+map_id
+     * eg:Tiles10
+     */
+    private static final String CREATE_TILES_TABLE_TEMPLATE =
+            "CREATE TABLE `%s` IF NOT EXISTS(\n" +
+                    "  `row_id` BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT COMMENT 'technical primary key'\n" +
                     "  `coordinates` BIGINT NOT NULL COMMENT 'x-y composite coordinates'\n" +
                     "  `zoom` int NOT NULL COMMENT 'zoom level',\n" +
                     "  `hashcode` bigint NOT NULL COMMENT 'image hashcode',\n" +
@@ -529,127 +592,126 @@ public class MySQLMapStorage extends MapStorage {
             	return false;
             } finally {
                 releaseConnection(c, err);
-                c = null;
             }
         }
-        if (version == 1) {
-            try {
-            	Log.info("Updating database schema from version = " + version);
-                c = getConnection();
-                doUpdate(c, "CREATE TABLE " + tableStandaloneFiles + " (FileName VARCHAR(128) NOT NULL, ServerID BIGINT NOT NULL DEFAULT 0, Content MEDIUMTEXT, PRIMARY KEY (FileName, ServerID))");
-                doUpdate(c, "ALTER TABLE " + tableMaps + " ADD COLUMN ServerID BIGINT NOT NULL DEFAULT 0 AFTER Variant");
-                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=2 WHERE level = 1;");
-                version = 2;
-            } catch (SQLException x) {
-            	logSQLException("Error updating tables to version=2", x);
-                err = true;
-                return false;
-            } catch (StorageShutdownException x) {
-            	err = true;
-            	return false;
-            } finally {
-                releaseConnection(c, err);
-                c = null;
-            }
-        }
-        if (version == 2) {
-            try {
-            	Log.info("Updating database schema from version = " + version);
-                c = getConnection();
-                doUpdate(c, "DELETE FROM " + tableStandaloneFiles + ";");
-                doUpdate(c, "ALTER TABLE " + tableStandaloneFiles + " DROP COLUMN Content;");
-                doUpdate(c, "ALTER TABLE " + tableStandaloneFiles + " ADD COLUMN Content MEDIUMTEXT;");
-                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=3 WHERE level = 2;");
-                version = 3;
-            } catch (SQLException x) {
-            	logSQLException("Error updating tables to version=3", x);
-                err = true;
-                return false;
-            } catch (StorageShutdownException x) {
-            	err = true;
-            	return false;
-            } finally {
-                releaseConnection(c, err);
-                c = null;
-            }
-        }
-        if (version == 3) {
-            try {
-            	Log.info("Updating database schema from version = " + version);
-                c = getConnection();
-                //doUpdate(c, "ALTER TABLE " + tableTiles + " CHANGE COLUMN Image Image MEDIUMBLOB;");
-                doUpdate(c, "ALTER TABLE " + tableFaces + " CHANGE COLUMN Image Image MEDIUMBLOB;");
-                doUpdate(c, "ALTER TABLE " + tableMarkerIcons + " CHANGE COLUMN Image Image MEDIUMBLOB;");
-                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=4 WHERE level = 3;");
-                version = 4;
-            } catch (SQLException x) {
-            	logSQLException("Error updating tables to version=4", x);
-                err = true;
-                return false;
-            } catch (StorageShutdownException x) {
-            	err = true;
-            	return false;
-            } finally {
-                releaseConnection(c, err);
-                c = null;
-            }
-        }
-        if (version == 4) {
-            try {
-            	Log.info("Updating database schema from version = " + version);
-                c = getConnection();
-            	DatabaseMetaData md = c.getMetaData();
-                // See if we are recovering from bug where version was still set to 4 when NewImage was added initialli
-                PreparedStatement stmt = c.prepareStatement("SHOW COLUMNS FROM " + tableTiles + " WHERE Field = 'NewImage';");
-                ResultSet rs = stmt.executeQuery();
-                boolean inplace = false;
-                if (rs.next()) {	// Got nothing?
-                	inplace = true;
-                }
-                rs.close();
-                stmt.close();
-                if (!inplace) {
-                	try {
-                    	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB, ALGORITHM=INPLACE, LOCK=NONE");
-                	} catch (SQLException x) {
-                    	Log.info("Updating tiles table using legacy method - this might take a while and may need a lot of database space...");
-                    	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB");
-                    	Log.info("Legacy tile update completed");
-                	}
-                }
-                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=5 WHERE level = 4;");
-                version = 5;
-            } catch (SQLException x) {
-            	logSQLException("Error updating tables to version=5", x);
-                err = true;
-                return false;
-            } catch (StorageShutdownException x) {
-            	err = true;
-            	return false;
-            } finally {
-                releaseConnection(c, err);
-                c = null;
-            }
-        }
-        if (version == 5) {
-            try {
-            	Log.info("Updating database schema from version = " + version);
-                c = getConnection();
-                doUpdate(c, "CREATE INDEX " + tableMaps + "_idx ON " + tableMaps + "(WorldID, MapID, Variant, ServerID)");
-                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=6 WHERE level = 5;");
-                version = 6;
-            } catch (SQLException x) {
-            	logSQLException("Error updating tables to version=5", x);
-                err = true;
-                return false;
-            } catch (StorageShutdownException x) {
-            	err = true;
-            	return false;
-            } finally {
-                releaseConnection(c, err);
-                c = null;
-            }
-        }
+//        if (version == 1) {
+//            try {
+//            	Log.info("Updating database schema from version = " + version);
+//                c = getConnection();
+//                doUpdate(c, "CREATE TABLE " + tableStandaloneFiles + " (FileName VARCHAR(128) NOT NULL, ServerID BIGINT NOT NULL DEFAULT 0, Content MEDIUMTEXT, PRIMARY KEY (FileName, ServerID))");
+//                doUpdate(c, "ALTER TABLE " + tableMaps + " ADD COLUMN ServerID BIGINT NOT NULL DEFAULT 0 AFTER Variant");
+//                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=2 WHERE level = 1;");
+//                version = 2;
+//            } catch (SQLException x) {
+//            	logSQLException("Error updating tables to version=2", x);
+//                err = true;
+//                return false;
+//            } catch (StorageShutdownException x) {
+//            	err = true;
+//            	return false;
+//            } finally {
+//                releaseConnection(c, err);
+//                c = null;
+//            }
+//        }
+//        if (version == 2) {
+//            try {
+//            	Log.info("Updating database schema from version = " + version);
+//                c = getConnection();
+//                doUpdate(c, "DELETE FROM " + tableStandaloneFiles + ";");
+//                doUpdate(c, "ALTER TABLE " + tableStandaloneFiles + " DROP COLUMN Content;");
+//                doUpdate(c, "ALTER TABLE " + tableStandaloneFiles + " ADD COLUMN Content MEDIUMTEXT;");
+//                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=3 WHERE level = 2;");
+//                version = 3;
+//            } catch (SQLException x) {
+//            	logSQLException("Error updating tables to version=3", x);
+//                err = true;
+//                return false;
+//            } catch (StorageShutdownException x) {
+//            	err = true;
+//            	return false;
+//            } finally {
+//                releaseConnection(c, err);
+//                c = null;
+//            }
+//        }
+//        if (version == 3) {
+//            try {
+//            	Log.info("Updating database schema from version = " + version);
+//                c = getConnection();
+//                //doUpdate(c, "ALTER TABLE " + tableTiles + " CHANGE COLUMN Image Image MEDIUMBLOB;");
+//                doUpdate(c, "ALTER TABLE " + tableFaces + " CHANGE COLUMN Image Image MEDIUMBLOB;");
+//                doUpdate(c, "ALTER TABLE " + tableMarkerIcons + " CHANGE COLUMN Image Image MEDIUMBLOB;");
+//                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=4 WHERE level = 3;");
+//                version = 4;
+//            } catch (SQLException x) {
+//            	logSQLException("Error updating tables to version=4", x);
+//                err = true;
+//                return false;
+//            } catch (StorageShutdownException x) {
+//            	err = true;
+//            	return false;
+//            } finally {
+//                releaseConnection(c, err);
+//                c = null;
+//            }
+//        }
+//        if (version == 4) {
+//            try {
+//            	Log.info("Updating database schema from version = " + version);
+//                c = getConnection();
+//            	DatabaseMetaData md = c.getMetaData();
+//                // See if we are recovering from bug where version was still set to 4 when NewImage was added initialli
+//                PreparedStatement stmt = c.prepareStatement("SHOW COLUMNS FROM " + tableTiles + " WHERE Field = 'NewImage';");
+//                ResultSet rs = stmt.executeQuery();
+//                boolean inplace = false;
+//                if (rs.next()) {	// Got nothing?
+//                	inplace = true;
+//                }
+//                rs.close();
+//                stmt.close();
+//                if (!inplace) {
+//                	try {
+//                    	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB, ALGORITHM=INPLACE, LOCK=NONE");
+//                	} catch (SQLException x) {
+//                    	Log.info("Updating tiles table using legacy method - this might take a while and may need a lot of database space...");
+//                    	doUpdate(c, "ALTER TABLE " + tableTiles + " ADD COLUMN NewImage MEDIUMBLOB");
+//                    	Log.info("Legacy tile update completed");
+//                	}
+//                }
+//                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=5 WHERE level = 4;");
+//                version = 5;
+//            } catch (SQLException x) {
+//            	logSQLException("Error updating tables to version=5", x);
+//                err = true;
+//                return false;
+//            } catch (StorageShutdownException x) {
+//            	err = true;
+//            	return false;
+//            } finally {
+//                releaseConnection(c, err);
+//                c = null;
+//            }
+//        }
+//        if (version == 5) {
+//            try {
+//            	Log.info("Updating database schema from version = " + version);
+//                c = getConnection();
+//                doUpdate(c, "CREATE INDEX " + tableMaps + "_idx ON " + tableMaps + "(WorldID, MapID, Variant, ServerID)");
+//                doUpdate(c, "UPDATE " + tableSchemaVersion + " SET level=6 WHERE level = 5;");
+//                version = 6;
+//            } catch (SQLException x) {
+//            	logSQLException("Error updating tables to version=5", x);
+//                err = true;
+//                return false;
+//            } catch (StorageShutdownException x) {
+//            	err = true;
+//            	return false;
+//            } finally {
+//                releaseConnection(c, err);
+//                c = null;
+//            }
+//        }
     	Log.info("Schema version = " + version);
         // Load maps table - cache results
         doLoadMaps();
@@ -824,10 +886,14 @@ public class MySQLMapStorage extends MapStorage {
             Statement stmt = c.createStatement(java.sql.ResultSet.TYPE_FORWARD_ONLY, //we want to stream our resultset one row at a time, we are not interessted in going back
                     java.sql.ResultSet.CONCUR_READ_ONLY); //since we do not handle the entire resultset in memory -> tell the statement that we are going to work read only
             stmt.setFetchSize(100); //we can change the jdbc "retrieval chunk size". Basicly we limit how much rows are kept in memory. Bigger value = less network calls to DB, but more memory consumption
-            ResultSet rs = stmt.executeQuery(String.format("SELECT x,y,zoom,Format FROM %s WHERE MapID=%d;", tableTiles, mapkey)); //we do the query, but do not set any limit / offset. Since data is not kept in memory, just streamed from DB this should not be a problem, only the rows from setFetchSize are kept in memory.
+            String tableTiles = nameOfTilesTable(mapkey);
+            ResultSet rs = stmt.executeQuery(String.format("SELECT coordinates,zoom,format FROM %s;", tableTiles)); //we do the query, but do not set any limit / offset. Since data is not kept in memory, just streamed from DB this should not be a problem, only the rows from setFetchSize are kept in memory.
             while (rs.next()) {
-                StorageTile st = new StorageTile(world, map, rs.getInt("x"), rs.getInt("y"), rs.getInt("zoom"), var);
-                final MapType.ImageEncoding encoding = MapType.ImageEncoding.fromOrd(rs.getInt("Format"));
+                long coordinates = rs.getLong("coordinates");
+                int x = (int) (coordinates >> 32);
+                int y = (int) (coordinates & 0xffffffffL);
+                StorageTile st = new StorageTile(world, map, x, y, rs.getInt("zoom"), var);
+                final MapType.ImageEncoding encoding = MapType.ImageEncoding.fromOrd(rs.getInt("format"));
                 if(cb != null)
                     cb.tileFound(st, encoding);
                 if(cbBase != null && st.zoom == 0)
@@ -868,15 +934,15 @@ public class MySQLMapStorage extends MapStorage {
     private void processPurgeMapTiles(DynmapWorld world, MapType map, ImageVariant var) {
         Connection c = null;
         boolean err = false;
-        Integer mapkey = getMapKey(world, map, var);
-        if (mapkey == null) return;
+        Integer mapId = getMapKey(world, map, var);
+        String tableTiles = nameOfTilesTable(mapId);
+        //eg. DROP TABLE Tiles10;
+        final String SQL = String.format("DROP TABLE %s;", tableTiles);
+        if (mapId == null) return;
         try {
             c = getConnection();
-            // Query tiles for given mapkey
-            Statement stmt = c.createStatement();
-            // Limit delete to 1000 at a time (avoid locking whole table)
-            while (stmt.executeUpdate("DELETE FROM " + tableTiles + " WHERE MapID=" + mapkey + " LIMIT 1000;") > 0) {
-            }
+            PreparedStatement stmt = c.prepareStatement(SQL);
+            stmt.executeUpdate();
             stmt.close();
         } catch (SQLException x) {
         	logSQLException("Tile purge error", x);
