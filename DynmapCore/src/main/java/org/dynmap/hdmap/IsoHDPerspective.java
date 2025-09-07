@@ -8,6 +8,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import org.dynmap.Client;
 import org.dynmap.Color;
@@ -77,8 +82,11 @@ public class IsoHDPerspective implements HDPerspective {
     
     // Cache for custom meshes by state (shared, reusable)
     private static RenderPatch[][] custom_meshes_by_globalstateindex = null;
+    private final ThreadPoolExecutor writeImagePool; // Thread pool for write images to storage
+    private final Logger logger = Logger.getLogger("IsoHDPerspective");
 
     private class OurPerspectiveState implements HDPerspectiveState {
+
         DynmapBlockState blocktype = DynmapBlockState.AIR;
         DynmapBlockState lastblocktype = DynmapBlockState.AIR;
         Vector3D top, bottom, direction;
@@ -1047,6 +1055,16 @@ public class IsoHDPerspective implements HDPerspective {
         Matrix3D coordswap = new Matrix3D(0.0, -1.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0);
         transform.multiply(coordswap);
         map_to_world = transform;
+
+
+        writeImagePool = new ThreadPoolExecutor(
+                1,
+                1,
+                Short.MAX_VALUE,
+                TimeUnit.SECONDS,
+                new LinkedBlockingDeque<>(Short.MAX_VALUE),
+                (r, executor) ->
+                        logger.log(Level.WARNING, "Could not write image to storage:waiting queue is full"));
     }   
 
     @Override
@@ -1350,68 +1368,57 @@ public class IsoHDPerspective implements HDPerspective {
         MapStorage storage = world.getMapStorage();
         for(int i = 0; i < numshaders; i++) {
             long crc = MapStorage.calculateImageHashCode(argb_buf[i], 0, argb_buf[i].length);
-            boolean tile_update = false;
             String prefix = shaderstate[i].getMap().getPrefix();
 
             MapStorageTile mtile = storage.getTile(world, shaderstate[i].getMap(), tile.tx, tile.ty, 0, MapType.ImageVariant.STANDARD);
 
+            renderone = doWrite(tile, mtile, crc, rendered[i], im[i], startTimestamp, prefix);
+            /* Handle day image, if needed */
+            if(dayim[i] != null) {
+                crc = MapStorage.calculateImageHashCode(day_argb_buf[i], 0, day_argb_buf[i].length);
+                mtile = storage.getTile(world, shaderstate[i].getMap(), tile.tx, tile.ty, 0, MapType.ImageVariant.DAY);
+                renderone = doWrite(tile, mtile, crc, rendered[i], im[i], startTimestamp, prefix + "_day");
+            }
+        }
+        return renderone;
+    }
+
+    private boolean doWrite(
+            HDMapTile tile,
+            MapStorageTile mtile,
+            long crc,
+            boolean rendered,
+            DynmapBufferedImage im,
+            long startTimestamp,
+            String prefix
+    ) {
+        boolean renderone = !mtile.matchesHashCode(crc);
+        writeImagePool.execute(() -> {
+            boolean tile_update = false;
             mtile.getWriteLock();
             try {
-                if(mtile.matchesHashCode(crc) == false) {
+                if(renderone) {
                     /* Wrap buffer as buffered image */
-                    if(rendered[i]) {   
-                        mtile.write(crc, im[i].buf_img, startTimestamp);
+                    if(rendered) {
+                        mtile.write(crc, im.buf_img, startTimestamp);
                     }
                     else {
                         mtile.delete();
                     }
                     MapManager.mapman.pushUpdate(tile.getDynmapWorld(), new Client.Tile(mtile.getURI()));
                     tile_update = true;
-                    renderone = true;
                 }
                 else {
-                    if(!rendered[i]) {   
+                    if(!rendered) {
                         mtile.delete();
                     }
                 }
             } finally {
                 mtile.releaseWriteLock();
-                DynmapBufferedImage.freeBufferedImage(im[i]);
+                DynmapBufferedImage.freeBufferedImage(im);
             }
-            MapManager.mapman.updateStatistics(tile, prefix, true, tile_update, !rendered[i]);
-            /* Handle day image, if needed */
-            if(dayim[i] != null) {
-                crc = MapStorage.calculateImageHashCode(day_argb_buf[i], 0, day_argb_buf[i].length);
-
-                mtile = storage.getTile(world, shaderstate[i].getMap(), tile.tx, tile.ty, 0, MapType.ImageVariant.DAY);
-
-                mtile.getWriteLock();
-                tile_update = false;
-                try {
-                    if(mtile.matchesHashCode(crc) == false) {
-                        /* Wrap buffer as buffered image */
-                        if(rendered[i]) {
-                            mtile.write(crc, dayim[i].buf_img, startTimestamp);
-                        }
-                        else {
-                            mtile.delete();
-                        }
-                        MapManager.mapman.pushUpdate(tile.getDynmapWorld(), new Client.Tile(mtile.getURI()));
-                        tile_update = true;
-                        renderone = true;
-                    }
-                    else {
-                        if(!rendered[i]) {   
-                            mtile.delete();
-                        }
-                    }
-                } finally {
-                    mtile.releaseWriteLock();
-                    DynmapBufferedImage.freeBufferedImage(dayim[i]);
-                }
-                MapManager.mapman.updateStatistics(tile, prefix+"_day", true, tile_update, !rendered[i]);
-            }
-        }
+            MapManager.mapman.updateStatistics(tile, prefix, true, tile_update, !rendered);
+        });
         return renderone;
     }
 
