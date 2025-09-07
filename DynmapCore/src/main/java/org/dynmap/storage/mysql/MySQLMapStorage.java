@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
@@ -51,7 +52,7 @@ public class MySQLMapStorage extends MapStorage {
     private long[] cpoolLastUseTS = new long[POOLSIZE];	// Time when last returned to pool
     private static final long IDLE_TIMEOUT = 60000;	// Use 60 second timeout
     private int cpoolCount = 0;
-    private static final Charset UTF8 = Charset.forName("UTF-8");
+    private static final Charset UTF8 = StandardCharsets.UTF_8;
 
     /**
      * get tiles table name
