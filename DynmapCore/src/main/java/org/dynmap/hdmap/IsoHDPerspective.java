@@ -1063,8 +1063,8 @@ public class IsoHDPerspective implements HDPerspective {
                 Short.MAX_VALUE,
                 TimeUnit.SECONDS,
                 new LinkedBlockingDeque<>(Short.MAX_VALUE),
-                (r, executor) ->
-                        logger.log(Level.WARNING, "Could not write image to storage:waiting queue is full"));
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
     }   
 
     @Override
