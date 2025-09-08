@@ -13,6 +13,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.dynmap.*;
 import org.dynmap.MapType.ImageVariant;
@@ -46,6 +47,12 @@ public class MySQLMapStorage extends MapStorage {
     private static final long IDLE_TIMEOUT = 60000;    // Use 60 second timeout
     private int cpoolCount = 0;
     private static final Charset UTF8 = StandardCharsets.UTF_8;
+    /**
+     * cache of tile table names <br>
+     * used to prevent duplicate tiles table creation
+     */
+    private static final Map<String, Object> tileTableNamesCache = new ConcurrentHashMap<>(16, 0.8f);
+    private static final Object DUMMY = new Object();
 
     /**
      * get tiles table name
@@ -71,7 +78,9 @@ public class MySQLMapStorage extends MapStorage {
          */
         private final String tableTiles;
         /**
-         * x-y composite coordinates
+         * x-y composite coordinates <br>
+         * The first four bytes are the x-axis <br>
+         * The last four bytes are the y-axis
          */
         private final long coordinates;
 
@@ -97,6 +106,9 @@ public class MySQLMapStorage extends MapStorage {
          * create tiles table if not exists
          */
         private void createTilesTable() {
+            if (tileTableNamesCache.containsKey(tableTiles)) {
+                return;
+            }
             final String DDL_SQL = String.format(CREATE_TILES_TABLE_DDL, tableTiles);
             Connection c = null;
             boolean err = false;
@@ -105,6 +117,7 @@ public class MySQLMapStorage extends MapStorage {
                 Statement stmt = c.createStatement();
                 stmt.execute(DDL_SQL);
                 stmt.close();
+                tileTableNamesCache.put(tableTiles, DUMMY);
             } catch (SQLException x) {
                 logSQLException(String.format("create %s error", tableTiles), x);
                 err = true;
@@ -964,6 +977,7 @@ public class MySQLMapStorage extends MapStorage {
             PreparedStatement stmt = c.prepareStatement(SQL);
             stmt.executeUpdate();
             stmt.close();
+            tileTableNamesCache.remove(tableTiles);
         } catch (SQLException x) {
             logSQLException("Tile purge error", x);
             err = true;
